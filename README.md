@@ -145,7 +145,7 @@ Create `backend/.env`:
 DATABASE_URL=postgresql+asyncpg://postgres:yourpassword@localhost:5432/reviewpilot
 GROQ_API_KEY=your_groq_api_key
 GITHUB_TOKEN=github_pat_your_token
-ALLOWED_ORIGINS=["http://localhost:5173"]
+ALLOWED_ORIGINS=["http://localhost:3000"]
 MODEL_NAME=llama-3.3-70b-versatile
 ```
 
