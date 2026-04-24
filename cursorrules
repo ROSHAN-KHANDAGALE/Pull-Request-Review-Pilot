@@ -1,0 +1,191 @@
+# ReviewPilot — Cursor Rules
+# This file configures Cursor AI for the ReviewPilot project.
+# Stack: FastAPI (async) + PostgreSQL + SQLAlchemy (async) + React 18 + Groq
+
+---
+
+## Project Overview
+
+ReviewPilot is an AI-native code review agent. It accepts GitHub PR URLs, fetches
+diffs, runs structured LLM analysis via Groq, scores results on a 0–10,000
+category-weighted rubric, and displays findings in a React frontend.
+
+---
+
+## General Rules
+
+- Always prefer async over sync in Python backend code
+- Never use `import *`
+- Use explicit type annotations on all function signatures (Python and JS/JSX)
+- Prefer early returns over deeply nested conditionals
+- Keep functions small and single-purpose
+- Never hardcode secrets, API keys, or credentials — always use environment variables
+- Write self-documenting code; add docstrings only for non-obvious logic
+
+---
+
+## Backend — Python / FastAPI
+
+### Framework Conventions
+- Use `async def` for all route handlers and service methods
+- Use `Depends()` for dependency injection (db session, services)
+- Use `APIRouter` with `prefix` and `tags` for all routers
+- Never put business logic in route handlers — delegate to service layer
+- Route handlers should: validate input → call service → return response
+
+### SQLAlchemy (Async)
+- Always use `AsyncSession` from `sqlalchemy.ext.asyncio`
+- Use `async_sessionmaker` with `expire_on_commit=False`
+- Always `await session.flush()` before accessing generated IDs
+- Always `await session.commit()` at the end of write operations
+- Always `await session.rollback()` in exception handlers
+- Use `selectinload()` for eager loading relationships — never lazy load in async context
+- Use `mapped_column()` syntax (SQLAlchemy 2.0 style) — not `Column()`
+- Use `DateTime(timezone=True)` for all timestamp columns
+- Use `UUID(as_uuid=True)` from `sqlalchemy.dialects.postgresql` for UUID columns
+- Model class names: singular PascalCase (`Review`, `Issue`, `BenchmarkRun`)
+- Table names: plural snake_case (`reviews`, `issues`, `benchmark_runs`)
+
+### Pydantic Schemas
+- Separate schemas from models — never return ORM objects directly from routes
+- All response schemas must include `model_config = {"from_attributes": True}`
+- Use `field_validator` with `@classmethod` for input validation
+- Use `UUID` from `uuid` (not from sqlalchemy) in schema type annotations
+- Request schemas: suffix `Create`, `Update`
+- Response schemas: suffix `Out`
+
+### Service Layer
+- Each service lives in `app/services/`
+- Services receive `AsyncSession` via constructor injection
+- External API clients (httpx, groq) are instantiated inside service `__init__`
+- Always close httpx clients in a `shutdown()` or `close()` method
+- Whitelist fields explicitly when mapping LLM output to ORM models — never `**unvalidated_dict`
+
+### Error Handling
+- Use `HTTPException` with appropriate status codes
+- 400 — bad input
+- 404 — resource not found
+- 502 — external API failure (GitHub, Groq)
+- Separate network errors (`httpx.RequestError`) from HTTP errors (non-200 status)
+- Never catch bare `Exception` unless re-raising with context
+
+### Config
+- All settings loaded via `pydantic-settings` `BaseSettings`
+- Settings class lives in `app/config.py`, exported as `settings` singleton
+- `.env` file in `backend/` — never committed to git
+
+### File Structure
+```
+app/
+├── main.py          # App factory, lifespan, middleware
+├── config.py        # Settings
+├── db.py            # Engine, session, Base
+├── models/          # ORM models only
+├── schemas/         # Pydantic schemas only
+├── routers/         # Route handlers only
+└── services/        # Business logic
+```
+
+---
+
+## Frontend — React / JavaScript
+
+### Component Rules
+- Use functional components only — no class components
+- All hooks must be called at the top level — never inside conditionals or loops
+- One component per file
+- Component files: PascalCase (`ReviewForm.jsx`, `ScoreGauge.jsx`)
+- Service/util files: camelCase (`api.js`)
+
+### State Management
+- Use `useState` and `useEffect` from React — no external state library needed at this scale
+- Lift state to the lowest common ancestor
+- Keep components focused — pass data down via props, events up via callbacks
+
+### API Calls
+- All API calls live in `src/services/api.js`
+- Use axios with a base instance configured from `REACT_APP_API_URL`
+- Never call `fetch` or `axios` directly inside components
+- Handle errors at the component level, not inside the service
+
+### Styling
+- All styles in `App.css` using CSS custom properties (variables)
+- No inline styles except dynamic values (e.g. score color, bar width)
+- No CSS-in-JS libraries
+- Class names: kebab-case (`.issue-card`, `.bench-bar`)
+- Dark theme by default — `--bg: #0b0e14`
+- Design tokens defined in `:root` — never hardcode colors outside of variables
+
+### Forms
+- Never use HTML `<form>` tags — use `div` with `onClick` handlers
+- Validate input client-side before sending to API
+- Disable inputs and buttons during loading state
+- Show inline error messages, not alerts
+
+### Environment
+- API base URL from `process.env.REACT_APP_API_URL`
+- Never hardcode `localhost` URLs in component code
+
+---
+
+## Naming Conventions
+
+| Context | Convention | Example |
+|---|---|---|
+| Python files | snake_case | `review_service.py` |
+| Python classes | PascalCase | `ReviewService` |
+| Python functions | snake_case | `run_full_review()` |
+| Python constants | UPPER_SNAKE | `CATEGORY_MAX` |
+| React components | PascalCase | `IssueList.jsx` |
+| React props | camelCase | `onSubmit`, `includeBenchmark` |
+| CSS classes | kebab-case | `.issue-card` |
+| DB tables | plural snake_case | `benchmark_runs` |
+| DB columns | snake_case | `review_id`, `created_at` |
+| API routes | plural kebab | `/reviews/`, `/benchmark-runs/` |
+
+---
+
+## Git Conventions
+
+- Never commit `.env` files
+- Never commit `__pycache__/`, `.venv/`, `node_modules/`
+- Branch naming: `feature/`, `fix/`, `chore/`
+- Commit messages: imperative present tense — "Add scorer service", "Fix datetime timezone bug"
+
+---
+
+## Security
+
+- All secrets via environment variables — no exceptions
+- GitHub token: minimum required scopes only (PR read + contents read)
+- Groq API key: never exposed to frontend
+- CORS: explicit allowed origins — never `allow_origins=["*"]` in production
+- Never log raw diffs or API responses that may contain secrets
+
+---
+
+## Performance Notes
+
+- Large diffs (500+ lines) may approach LLM context limits — keep this in mind when testing
+- `selectinload()` is mandatory for relationship loading in async SQLAlchemy — lazy loading will raise `MissingGreenlet` errors
+- `expire_on_commit=False` is set on the session factory — objects remain usable after commit without re-querying
+
+---
+
+## Scoring System Reference
+
+Category weights (max points):
+- correctness: 4000
+- security: 2000
+- maintainability: 2000
+- test_coverage: 1000
+- documentation: 1000
+
+Severity multipliers:
+- critical: 1.0 (100% of category max)
+- major: 0.4 (40%)
+- minor: 0.13 (13%)
+- info: 0.0 (0%)
+
+Each category is independently floored at 0.
+Full methodology: see BENCHMARK.md
