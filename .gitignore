@@ -1,7 +1,19 @@
+# Editor
+.vscode/
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
-
+*.pyc
+.venv/
+venv/
+*.egg-info/
 
 # Environments
 .env
+.env.local
 venv/
+
+# OS
+.DS_Store
+Thumbs.db
