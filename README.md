@@ -2,7 +2,6 @@
 
 > AI-native code review agent — submit a GitHub PR URL, get a structured review with scored findings, severity-tagged issues, and a benchmark comparison against vanilla Claude.
 
-Built as a quest submission for the **FDE/APO AI-Native Talent Recruitment** by MUST Company.
 
 ---
 
