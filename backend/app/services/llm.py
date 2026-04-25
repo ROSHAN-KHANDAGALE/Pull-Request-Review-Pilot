@@ -9,6 +9,16 @@ class LLMService:
         self.model = settings.model_name
 
     async def analyze_diff(self, diff: str) -> dict:
+        # Rough token estimate — 1 token ≈ 4 characters
+        estimated_tokens = len(diff) // 4
+
+        if estimated_tokens > 6000:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Diff is too large to review ({estimated_tokens} estimated tokens). "
+                    f"Please review smaller PRs or split into multiple PRs. Max: 6000 tokens."
+            )
+
         system_prompt = """
             You are an expert code reviewer. Analyze the git diff and return ONLY a valid JSON object with no extra text.
 

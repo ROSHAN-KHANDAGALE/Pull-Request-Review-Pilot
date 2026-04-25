@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 import asyncpg
 from app.db import engine, Base
-from app.routers import review
+from app.routers import review, auth
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
+
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.middleware.rate_limit import limiter
 
 
 allow_origins = settings.allowed_origins
@@ -54,7 +58,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(review.router)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 @app.get("/")
 def root():

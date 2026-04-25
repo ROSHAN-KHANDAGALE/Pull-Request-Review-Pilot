@@ -8,6 +8,10 @@ from app.services.review import ReviewService
 from app.services.scorer import ScorerService
 from app.models.review import Review
 
+from app.middleware.rate_limit import limiter
+from fastapi import Request
+
+
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
 
@@ -26,7 +30,8 @@ def build_review_response(review: Review) -> dict:
 
 
 @router.post("/", response_model=ReviewOut)
-async def create_review(payload: ReviewCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/hour")
+async def create_review(request: Request, payload: ReviewCreate, db: AsyncSession = Depends(get_db)):
     service = ReviewService(db)
     try:
         review = await service.run_full_review(payload.pr_url, payload.include_benchmark)
