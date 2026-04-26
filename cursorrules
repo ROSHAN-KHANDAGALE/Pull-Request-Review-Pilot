@@ -1,6 +1,5 @@
 # ReviewPilot — Cursor Rules
-# This file configures Cursor AI for the ReviewPilot project.
-# Stack: FastAPI (async) + PostgreSQL + SQLAlchemy (async) + React 18 + Groq
+# Stack: FastAPI (async) + PostgreSQL + SQLAlchemy (async) + React 18 (CRA) + Groq + Celery + Redis
 
 ---
 
@@ -8,7 +7,8 @@
 
 ReviewPilot is an AI-native code review agent. It accepts GitHub PR URLs, fetches
 diffs, runs structured LLM analysis via Groq, scores results on a 0–10,000
-category-weighted rubric, and displays findings in a React frontend.
+category-weighted rubric, and displays findings in a React 18 frontend.
+Reviews are processed asynchronously via Celery + Redis.
 
 ---
 
@@ -16,7 +16,7 @@ category-weighted rubric, and displays findings in a React frontend.
 
 - Always prefer async over sync in Python backend code
 - Never use `import *`
-- Use explicit type annotations on all function signatures (Python and JS/JSX)
+- Use explicit type annotations on all function signatures
 - Prefer early returns over deeply nested conditionals
 - Keep functions small and single-purpose
 - Never hardcode secrets, API keys, or credentials — always use environment variables
@@ -43,8 +43,8 @@ category-weighted rubric, and displays findings in a React frontend.
 - Use `mapped_column()` syntax (SQLAlchemy 2.0 style) — not `Column()`
 - Use `DateTime(timezone=True)` for all timestamp columns
 - Use `UUID(as_uuid=True)` from `sqlalchemy.dialects.postgresql` for UUID columns
-- Model class names: singular PascalCase (`Review`, `Issue`, `BenchmarkRun`)
-- Table names: plural snake_case (`reviews`, `issues`, `benchmark_runs`)
+- Model class names: singular PascalCase (`Review`, `Issue`, `BenchmarkRun`, `User`)
+- Table names: plural snake_case (`reviews`, `issues`, `benchmark_runs`, `users`)
 
 ### Pydantic Schemas
 - Separate schemas from models — never return ORM objects directly from routes
@@ -61,34 +61,74 @@ category-weighted rubric, and displays findings in a React frontend.
 - Always close httpx clients in a `shutdown()` or `close()` method
 - Whitelist fields explicitly when mapping LLM output to ORM models — never `**unvalidated_dict`
 
+### Authentication
+- JWT tokens created with python-jose, signed with HS256
+- Passwords hashed with passlib bcrypt — never store plain text
+- `OAuth2PasswordBearer` with `tokenUrl="/auth/login"` for protected routes
+- `OAuth2PasswordRequestForm` for login — `form.username` treated as email
+- Always check `user.is_active` in login and protected routes
+- Token expiry from `settings.access_token_expire_minutes`
+
+### Rate Limiting
+- slowapi `Limiter` with `get_remote_address` as key function
+- Limiter instance in `app/middleware/rate_limit.py`
+- Register on `app.state.limiter` and add `RateLimitExceeded` handler in `main.py`
+- Apply `@limiter.limit("10/hour")` only on expensive endpoints (POST /reviews/)
+- `Request` must be the first parameter on rate-limited route handlers
+
+### Celery + Redis
+- Celery app defined in `app/worker.py` with `include=["app.tasks"]`
+- Tasks defined in `app/tasks.py` with `@celery_app.task(name="task_name")` decorator
+- Tasks are regular `def` functions — wrap async logic with `asyncio.run()`
+- Never use `async def` directly as a Celery task
+- Celery worker must be started with `--pool=solo` on Windows
+- Always create a fresh `AsyncSessionLocal()` session inside tasks — never reuse FastAPI sessions
+- Always close the session in a `finally` block inside tasks
+- Import services inside the async function (not at module level) to avoid circular imports
+
 ### Error Handling
 - Use `HTTPException` with appropriate status codes
 - 400 — bad input
+- 401 — unauthorized / invalid credentials
+- 403 — forbidden (inactive account)
 - 404 — resource not found
+- 429 — rate limit exceeded (handled by slowapi automatically)
 - 502 — external API failure (GitHub, Groq)
 - Separate network errors (`httpx.RequestError`) from HTTP errors (non-200 status)
-- Never catch bare `Exception` unless re-raising with context
+- Always log exceptions in Celery tasks — never swallow silently
 
 ### Config
 - All settings loaded via `pydantic-settings` `BaseSettings`
 - Settings class lives in `app/config.py`, exported as `settings` singleton
 - `.env` file in `backend/` — never committed to git
+- Required env vars: `DATABASE_URL`, `GROQ_API_KEY`, `GITHUB_TOKEN`,
+  `ALLOWED_ORIGINS`, `MODEL_NAME`, `SECRET_KEY`,
+  `ACCESS_TOKEN_EXPIRE_MINUTES`, `REDIS_URL`
 
 ### File Structure
 ```
 app/
-├── main.py          # App factory, lifespan, middleware
-├── config.py        # Settings
-├── db.py            # Engine, session, Base
-├── models/          # ORM models only
-├── schemas/         # Pydantic schemas only
-├── routers/         # Route handlers only
-└── services/        # Business logic
+├── main.py           # App factory, lifespan, middleware, rate limit handler
+├── config.py         # Settings
+├── db.py             # Engine, session, Base
+├── worker.py         # Celery app
+├── tasks.py          # Background tasks
+├── middleware/       # Rate limiting
+├── models/           # ORM models only
+├── schemas/          # Pydantic schemas only
+├── routers/          # Route handlers only
+└── services/         # Business logic
 ```
 
 ---
 
-## Frontend — React / JavaScript
+## Frontend — React 18 (Create React App)
+
+### Environment
+- This project uses Create React App (CRA)
+- Environment variables must be prefixed with `REACT_APP_`
+- Access via `process.env.REACT_APP_API_URL`
+- Dev server runs on `http://localhost:3000`
 
 ### Component Rules
 - Use functional components only — no class components
@@ -98,33 +138,37 @@ app/
 - Service/util files: camelCase (`api.js`)
 
 ### State Management
-- Use `useState` and `useEffect` from React — no external state library needed at this scale
+- Use `useState`, `useEffect`, `useRef` from React
+- Use `useRef` to store cleanup functions (e.g. polling interval clearers)
+- Always clean up intervals and subscriptions in `useEffect` return or `useRef`
 - Lift state to the lowest common ancestor
-- Keep components focused — pass data down via props, events up via callbacks
+
+### Polling Pattern
+- `pollReview(id, onUpdate, onComplete, onError)` in `api.js`
+- Poll every 3000ms (3 seconds)
+- Max 60 attempts (3 minute timeout)
+- Returns a cleanup function — store in `useRef`, call on new submission or unmount
+- Stop polling when status is `completed` or `failed`
 
 ### API Calls
 - All API calls live in `src/services/api.js`
-- Use axios with a base instance configured from `REACT_APP_API_URL`
+- Use axios with a base instance configured from `process.env.REACT_APP_API_URL`
 - Never call `fetch` or `axios` directly inside components
 - Handle errors at the component level, not inside the service
 
 ### Styling
 - All styles in `App.css` using CSS custom properties (variables)
-- No inline styles except dynamic values (e.g. score color, bar width)
+- No inline styles except dynamic values (score color, bar width, gauge fill)
 - No CSS-in-JS libraries
 - Class names: kebab-case (`.issue-card`, `.bench-bar`)
 - Dark theme by default — `--bg: #0b0e14`
-- Design tokens defined in `:root` — never hardcode colors outside of variables
+- Design tokens defined in `:root` — never hardcode colors outside variables
 
 ### Forms
 - Never use HTML `<form>` tags — use `div` with `onClick` handlers
 - Validate input client-side before sending to API
 - Disable inputs and buttons during loading state
-- Show inline error messages, not alerts
-
-### Environment
-- API base URL from `process.env.REACT_APP_API_URL`
-- Never hardcode `localhost` URLs in component code
+- Show inline error messages, not browser alerts
 
 ---
 
@@ -141,16 +185,20 @@ app/
 | CSS classes | kebab-case | `.issue-card` |
 | DB tables | plural snake_case | `benchmark_runs` |
 | DB columns | snake_case | `review_id`, `created_at` |
-| API routes | plural kebab | `/reviews/`, `/benchmark-runs/` |
+| API routes | plural kebab | `/reviews/`, `/auth/` |
+| Celery tasks | snake_case | `run_review_task` |
+| Env vars (backend) | UPPER_SNAKE | `GROQ_API_KEY` |
+| Env vars (frontend) | REACT_APP_UPPER | `REACT_APP_API_URL` |
 
 ---
 
 ## Git Conventions
 
 - Never commit `.env` files
-- Never commit `__pycache__/`, `.venv/`, `node_modules/`
+- Never commit `__pycache__/`, `.venv/`, `node_modules/`, `.vscode/`
 - Branch naming: `feature/`, `fix/`, `chore/`
 - Commit messages: imperative present tense — "Add scorer service", "Fix datetime timezone bug"
+- To untrack an already-committed file: `git rm -r --cached <file>` then commit
 
 ---
 
@@ -159,16 +207,28 @@ app/
 - All secrets via environment variables — no exceptions
 - GitHub token: minimum required scopes only (PR read + contents read)
 - Groq API key: never exposed to frontend
+- JWT secret key: long random string, rotate regularly
 - CORS: explicit allowed origins — never `allow_origins=["*"]` in production
 - Never log raw diffs or API responses that may contain secrets
+- Rate limit all expensive endpoints
 
 ---
 
-## Performance Notes
+## Running the Full Stack
 
-- Large diffs (500+ lines) may approach LLM context limits — keep this in mind when testing
-- `selectinload()` is mandatory for relationship loading in async SQLAlchemy — lazy loading will raise `MissingGreenlet` errors
-- `expire_on_commit=False` is set on the session factory — objects remain usable after commit without re-querying
+```bash
+# Terminal 1 — Redis
+docker start reviewpilot-redis
+
+# Terminal 2 — FastAPI
+uvicorn app.main:app --reload
+
+# Terminal 3 — Celery worker
+celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+
+# Terminal 4 — React frontend
+npm start
+```
 
 ---
 
@@ -186,6 +246,12 @@ Severity multipliers:
 - major: 0.4 (40%)
 - minor: 0.13 (13%)
 - info: 0.0 (0%)
+
+Baseline (vanilla Claude) flat deductions:
+- critical: -1500 pts
+- major: -500 pts
+- minor: -100 pts
+- info: 0 pts
 
 Each category is independently floored at 0.
 Full methodology: see BENCHMARK.md

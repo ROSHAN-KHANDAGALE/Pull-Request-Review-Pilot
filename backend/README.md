@@ -1,6 +1,6 @@
 # ReviewPilot — Backend
 
-AI-native code review API built with FastAPI, PostgreSQL, and Groq. Accepts a GitHub PR URL, fetches the diff, runs a structured LLM review, and returns a scored report with categorized issues.
+AI-native code review API built with FastAPI, PostgreSQL, Groq, and Celery. Accepts a GitHub PR URL, fetches the diff, runs a structured async LLM review, and returns a scored report with categorized issues.
 
 ---
 
@@ -10,8 +10,11 @@ AI-native code review API built with FastAPI, PostgreSQL, and Groq. Accepts a Gi
 |---|---|
 | Framework | FastAPI (async) |
 | Database | PostgreSQL + SQLAlchemy (async) + asyncpg |
+| Task Queue | Celery + Redis |
 | LLM | Groq — `llama-3.3-70b-versatile` |
 | GitHub Integration | GitHub REST API v3 (httpx) |
+| Authentication | JWT via python-jose + passlib bcrypt |
+| Rate Limiting | slowapi (10 requests/hour per IP) |
 | Config | pydantic-settings |
 | Server | Uvicorn |
 
@@ -22,20 +25,28 @@ AI-native code review API built with FastAPI, PostgreSQL, and Groq. Accepts a Gi
 ```
 backend/
 ├── app/
-│   ├── main.py              # App entrypoint, lifespan, CORS
+│   ├── main.py              # App entrypoint, lifespan, CORS, rate limit handler
 │   ├── config.py            # Environment settings via pydantic-settings
 │   ├── db.py                # Async engine, session, Base
+│   ├── worker.py            # Celery app definition
+│   ├── tasks.py             # Background review task (asyncio.run wrapper)
+│   ├── middleware/
+│   │   └── rate_limit.py    # slowapi Limiter instance
 │   ├── models/
-│   │   └── review.py        # Review, Issue, BenchmarkRun ORM models
+│   │   ├── review.py        # Review, Issue, BenchmarkRun ORM models
+│   │   └── user.py          # User ORM model
 │   ├── schemas/
-│   │   └── review.py        # Pydantic request/response schemas
+│   │   ├── review.py        # ReviewCreate, ReviewOut, IssueOut, BenchmarkOut
+│   │   └── user.py          # UserCreate, UserOut, TokenOut
 │   ├── routers/
-│   │   └── review.py        # POST /reviews/, GET /reviews/{id}
+│   │   ├── review.py        # POST /reviews/, GET /reviews/{id}
+│   │   └── auth.py          # POST /auth/register, /auth/login, GET /auth/me
 │   └── services/
 │       ├── github.py        # GitHub diff fetcher
-│       ├── llm.py           # Groq LLM analysis
+│       ├── llm.py           # Groq LLM analysis + diff size validation
 │       ├── scorer.py        # Category-weighted scoring engine
-│       └── review.py        # Orchestrates the full review pipeline
+│       ├── review.py        # Full review orchestration + run_analysis_only
+│       └── auth.py          # Password hashing, JWT creation, user validation
 ├── .env                     # Environment variables (never commit)
 └── requirements.txt
 ```
@@ -44,8 +55,9 @@ backend/
 
 ## Prerequisites
 
-- Python 3.11+
-- PostgreSQL running locally (or remote)
+- Python 3.12
+- PostgreSQL running locally or remote
+- Docker (for Redis)
 - Groq API key → https://console.groq.com
 - GitHub Fine-grained Personal Access Token
 
@@ -53,7 +65,7 @@ backend/
 
 ## Setup
 
-### 1. Clone and create virtual environment
+### 1. Create virtual environment
 
 ```bash
 cd backend
@@ -61,7 +73,6 @@ python -m venv venv
 
 # Windows
 venv\Scripts\activate
-
 # macOS/Linux
 source venv/bin/activate
 ```
@@ -77,64 +88,103 @@ pip install -r requirements.txt
 Create a `.env` file in the `backend/` directory:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://postgres:yourpassword@localhost:5432/reviewpilot
+DATABASE_URL=postgresql+asyncpg://yourusername:yourpassword@localhost:5432/reviewpilot
 GROQ_API_KEY=your_groq_api_key
 GITHUB_TOKEN=github_pat_your_token
 ALLOWED_ORIGINS=["http://localhost:3000"]
-MODEL_NAME=model_name
+MODEL_NAME=your_model_name
+SECRET_KEY=your-super-secret-key-change-this
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REDIS_URL=redis://localhost:6379/0
 ```
 
-### 4. GitHub Token Setup
+### 4. Start Redis
 
-1. Go to https://github.com/settings/tokens
-2. Click **Generate new token (Fine-grained)**
-3. Set **Repository access** → All repositories
-4. Under **Permissions → Repository permissions** set:
-   - Pull requests → Read-only
-   - Contents → Read-only
-5. Generate and copy the token into `.env`
+```bash
+docker run -d --name reviewpilot-redis -p 6379:6379 redis:alpine
+```
 
-### 5. Run the server
+### 5. Start the API server
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-On first startup, the lifespan handler automatically:
-- Creates the `reviewpilot` database if it doesn't exist
-- Creates all tables via SQLAlchemy metadata
+On first startup the lifespan handler automatically creates the database and all tables.
 
-No manual pgAdmin setup required.
+### 6. Start the Celery worker (new terminal)
+
+```bash
+celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+```
+
+`--pool=solo` is required on Windows for asyncio compatibility.
+
+On startup you should see:
+
+```
+[tasks]
+  . run_review_task
+```
+
+---
+
+## How It Works
+
+### Async Review Pipeline
+
+```
+POST /reviews/
+      ↓
+Create Review record (status: pending) → return instantly
+      ↓
+Queue task to Redis via Celery .delay()
+      ↓
+Celery worker picks up task
+      ↓
+GitHubService.fetch_diff() → raw diff text
+      ↓
+LLMService.analyze_diff() → structured JSON issues
+      ↓
+ScorerService.calculate_total_score() → 0–10,000
+      ↓
+Persist issues + benchmark → status: completed
+      ↓
+Frontend polls GET /reviews/{id} → shows results
+```
+
+### Authentication Flow
+
+```
+POST /auth/register → hash password → store user → return UserOut
+POST /auth/login    → verify password → create JWT → return TokenOut
+GET  /auth/me       → decode JWT → return current user
+```
 
 ---
 
 ## API Endpoints
 
-### `POST /reviews/`
+### Auth
 
-Submit a GitHub PR for review.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| POST | `/auth/register` | None | Register new user |
+| POST | `/auth/login` | None | Login, receive JWT |
+| GET | `/auth/me` | Bearer token | Get current user |
 
-**Request body:**
-```json
-{
-  "pr_url": "https://github.com/owner/repo/pull/123",
-  "include_benchmark": false
-}
-```
+### Reviews
 
-**Response:** Full `ReviewOut` object with issues, score, and optional benchmark.
-
----
-
-### `GET /reviews/{review_id}`
-
-Fetch a previously completed review by UUID.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| POST | `/reviews/` | None | Submit PR for review |
+| GET | `/reviews/{id}` | None | Poll status / fetch results |
 
 ---
 
 ## Scoring System
 
-The agent uses a **category-weighted scoring model** from 0 to 10,000:
+Category-weighted model from 0 to 10,000:
 
 | Category | Max Points |
 |---|---|
@@ -144,23 +194,29 @@ The agent uses a **category-weighted scoring model** from 0 to 10,000:
 | Test Coverage | 1,000 |
 | Documentation | 1,000 |
 
-Issues deduct points proportionally by severity:
+Severity multipliers per category pool:
 
 | Severity | Multiplier |
 |---|---|
-| Critical | 100% of category max |
+| Critical | 100% |
 | Major | 40% |
 | Minor | 13% |
 | Info | 0% |
 
-Each category is capped independently — a single bad category cannot tank the entire score.
+Each category pools independently — one bad category cannot collapse the full score. Full methodology in `BENCHMARK.md`.
 
-### Benchmark Comparison
+---
 
-When `include_benchmark: true`, the API also calculates a **baseline score** simulating vanilla Claude/Cursor behavior — flat severity deductions with no category awareness. This demonstrates the agent's structured advantage.
+## GitHub Token Setup
+
+1. Go to https://github.com/settings/tokens
+2. Click **Generate new token (Fine-grained)**
+3. Repository access → All repositories
+4. Permissions → Pull requests: Read-only, Contents: Read-only
+5. Paste into `.env` as `GITHUB_TOKEN`
 
 ---
 
 ## Interactive Docs
 
-Visit `http://localhost:8000/docs` for the Swagger UI after starting the server.
+Visit `http://localhost:8000/docs` after starting the server.

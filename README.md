@@ -10,10 +10,11 @@
 ReviewPilot takes a GitHub Pull Request URL and:
 
 1. Fetches the raw diff via the GitHub API
-2. Runs a structured LLM review using Groq (`llama-3.3-70b-versatile`)
+2. Runs a structured LLM review using Groq.
 3. Extracts issues tagged by severity (`critical`, `major`, `minor`, `info`) and category (`correctness`, `security`, `maintainability`, `test_coverage`, `documentation`)
 4. Calculates a **category-weighted score from 0 to 10,000**
-5. Optionally benchmarks against a simulated vanilla Claude baseline to demonstrate the agent's structured advantage
+5. Optionally benchmarks against a simulated vanilla Claude baseline
+6. Processes reviews asynchronously via Celery + Redis — no hanging requests
 
 ---
 
@@ -29,6 +30,9 @@ Vanilla LLMs can review code — but they return freeform prose with no structur
 | Category awareness | None | 5 categories with weighted pools |
 | GitHub integration | None | Fetches diff directly from PR URL |
 | Consistency | Varies per prompt | Same rubric every run |
+| Authentication | None | JWT-based user auth |
+| Rate limiting | None | 10 requests/hour per IP |
+| Async processing | None | Celery + Redis background queue |
 
 ---
 
@@ -48,16 +52,12 @@ Issues deduct from their category pool by severity:
 
 | Severity | Deduction |
 |---|---|
-| Critical | 100% of category max per issue |
+| Critical | 100% of category max |
 | Major | 40% |
 | Minor | 13% |
 | Info | 0% |
 
-Each category is independently capped — one bad category cannot collapse the full score. This is the key structural advantage over the flat-deduction baseline.
-
-### Benchmark Comparison
-
-When benchmark mode is enabled, the API also computes a **baseline score** using flat severity deductions (no category awareness) — simulating how a vanilla Claude response would score under the same rubric. The UI shows both side-by-side.
+Each category is independently capped — one bad category cannot collapse the full score.
 
 ---
 
@@ -69,8 +69,10 @@ When benchmark mode is enabled, the API also computes a **baseline score** using
 | Styling | Custom CSS — dark theme, Syne + DM Mono fonts |
 | Backend | FastAPI (async Python) |
 | Database | PostgreSQL + SQLAlchemy (async) + asyncpg |
-| LLM | Groq — `llama-3.3-70b-versatile` |
+| Task Queue | Celery + Redis |
+| LLM | Groq  |
 | GitHub | GitHub REST API v3 (httpx) |
+| Auth | JWT via python-jose + passlib |
 | Config | pydantic-settings |
 
 ---
@@ -81,17 +83,28 @@ When benchmark mode is enabled, the API also computes a **baseline score** using
 reviewpilot/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py              # Entrypoint, lifespan, CORS
-│   │   ├── config.py            # Env settings
-│   │   ├── db.py                # Async DB engine + session
-│   │   ├── models/review.py     # ORM models: Review, Issue, BenchmarkRun
-│   │   ├── schemas/review.py    # Pydantic schemas
-│   │   ├── routers/review.py    # API routes
+│   │   ├── main.py                  # Entrypoint, lifespan, CORS
+│   │   ├── config.py                # Env settings
+│   │   ├── db.py                    # Async DB engine + session
+│   │   ├── worker.py                # Celery app definition
+│   │   ├── tasks.py                 # Background review task
+│   │   ├── middleware/
+│   │   │   └── rate_limit.py        # slowapi limiter
+│   │   ├── models/
+│   │   │   ├── review.py            # Review, Issue, BenchmarkRun
+│   │   │   └── user.py              # User model
+│   │   ├── schemas/
+│   │   │   ├── review.py            # Review schemas
+│   │   │   └── user.py              # User + Token schemas
+│   │   ├── routers/
+│   │   │   ├── review.py            # Review routes
+│   │   │   └── auth.py              # Auth routes
 │   │   └── services/
-│   │       ├── github.py        # Diff fetcher
-│   │       ├── llm.py           # LLM review pipeline
-│   │       ├── scorer.py        # Scoring engine
-│   │       └── review.py        # Orchestration service
+│   │       ├── github.py            # Diff fetcher
+│   │       ├── llm.py               # LLM review pipeline
+│   │       ├── scorer.py            # Scoring engine
+│   │       ├── review.py            # Orchestration service
+│   │       └── auth.py              # JWT + password service
 │   ├── .env
 │   └── requirements.txt
 ├── frontend/
@@ -101,12 +114,14 @@ reviewpilot/
 │   │   │   ├── ScoreGauge.jsx
 │   │   │   ├── IssueList.jsx
 │   │   │   └── BenchmarkPanel.jsx
-│   │   ├── services/api.js
+│   │   ├── services/
+│   │   │   └── api.js               # Axios + polling logic
 │   │   ├── App.jsx
 │   │   └── App.css
 │   ├── .env
 │   └── package.json
 ├── .cursorrules
+├── BENCHMARK.md
 └── README.md
 ```
 
@@ -119,6 +134,7 @@ reviewpilot/
 - Python 3.11+
 - Node.js 18+
 - PostgreSQL (local or remote)
+- Docker (for Redis)
 - Groq API key → https://console.groq.com
 - GitHub Fine-grained Personal Access Token
 
@@ -141,20 +157,35 @@ pip install -r requirements.txt
 Create `backend/.env`:
 
 ```env
-DATABASE_URL=postgresql+asyncpg://postgres:yourpassword@localhost:5432/reviewpilot
+DATABASE_URL=postgresql+asyncpg://yourusername:yourpassword@localhost:5432/reviewpilot
 GROQ_API_KEY=your_groq_api_key
 GITHUB_TOKEN=github_pat_your_token
 ALLOWED_ORIGINS=["http://localhost:3000"]
-MODEL_NAME=llama-3.3-70b-versatile
+MODEL_NAME=your_model_name
+SECRET_KEY=your-super-secret-key-change-this
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REDIS_URL=redis://localhost:6379/0
 ```
 
-Start the server:
+Start Redis via Docker:
+
+```bash
+docker run -d --name reviewpilot-redis -p 6379:6379 redis:alpine
+```
+
+Start the FastAPI server:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-On first run, the lifespan handler automatically creates the database and all tables. No pgAdmin setup needed.
+Start the Celery worker (new terminal):
+
+```bash
+celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+```
+
+On first run, the lifespan handler automatically creates the database and all tables.
 
 ---
 
@@ -163,6 +194,7 @@ On first run, the lifespan handler automatically creates the database and all ta
 ```bash
 cd frontend
 npm install
+npm start
 ```
 
 Create `frontend/.env`:
@@ -171,13 +203,24 @@ Create `frontend/.env`:
 REACT_APP_API_URL=http://localhost:8000
 ```
 
-Start the dev server:
+App runs at `http://localhost:3000`.
+
+---
+
+### Running All Services
+
+You need three terminals:
 
 ```bash
-npm run dev
-```
+# Terminal 1 — FastAPI
+uvicorn app.main:app --reload
 
-App runs at `http://localhost:3000`.
+# Terminal 2 — Celery worker
+celery -A app.worker.celery_app worker --loglevel=info --pool=solo
+
+# Terminal 3 — Redis (if not already running)
+docker start reviewpilot-redis
+```
 
 ---
 
@@ -193,35 +236,37 @@ App runs at `http://localhost:3000`.
 
 ---
 
-## Cursor Configuration
+## API Reference
 
-This project is Cursor-ready. The `.cursorrules` file at the root defines:
+### Auth
 
-- Stack conventions (FastAPI async patterns, SQLAlchemy async, React hooks)
-- File naming and structure rules
-- Service layer patterns
-- Pydantic schema conventions
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Register a new user |
+| POST | `/auth/login` | Login, receive JWT token |
+| GET | `/auth/me` | Get current user info |
 
-Open the project root in Cursor and the rules apply automatically.
+### Reviews
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/reviews/` | Submit a PR for review (rate limited: 10/hour) |
+| GET | `/reviews/{id}` | Poll review status and fetch results |
+
+### Async Review Flow
+
+```
+POST /reviews/     → returns { id, status: "pending" } instantly
+GET  /reviews/{id} → poll every 3s until status = "completed"
+```
+
+Full Swagger docs at `http://localhost:8000/docs`.
 
 ---
 
-## API Reference
+## Cursor Configuration
 
-### `POST /reviews/`
-
-```json
-{
-  "pr_url": "https://github.com/owner/repo/pull/123",
-  "include_benchmark": false
-}
-```
-
-### `GET /reviews/{review_id}`
-
-Returns a previously completed review by UUID.
-
-Full Swagger docs available at `http://localhost:8000/docs`.
+This project is Cursor-ready. The `.cursorrules` file at the root defines stack conventions, naming rules, service patterns, and the full scoring system reference. Open the project root in Cursor and the rules apply automatically.
 
 ---
 
@@ -231,10 +276,13 @@ Scoring methodology and benchmark results are documented in [`BENCHMARK.md`](./B
 
 ---
 
-## Quest Submission Checklist
+## Quest Checklist
 
 - [x] Agent code (FastAPI + Groq + GitHub API)
 - [x] Cursor-configured (`.cursorrules`)
+- [x] JWT Authentication
+- [x] Rate limiting (10/hour per IP)
+- [x] Async background processing (Celery + Redis)
 - [x] Performance metrics and calculation method
 - [x] Comparison with default Cursor/Claude baseline
 - [x] Problem specialization explanation
