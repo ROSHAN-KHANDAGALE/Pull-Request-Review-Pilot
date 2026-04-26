@@ -499,6 +499,11 @@ body {
   line-height: 1.6;
 }
 
+.meta-status[data-status="pending"] {
+  background: rgba(79, 138, 255, 0.12);
+  color: var(--accent);
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 600px) {
   .app-main { padding: 20px 16px 60px; }
