@@ -8,8 +8,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 @celery_app.task(name="run_review_task")
-def run_review_task(review_id: str, pr_url: str, include_benchmark: bool):
-    asyncio.run(_async_run_review(review_id, pr_url, include_benchmark))
+def run_review_task(review_id, pr_url, include_benchmark):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_async_run_review(review_id, pr_url, include_benchmark))
+    finally:
+        loop.close()
 
 
 async def _async_run_review(review_id: str, pr_url: str, include_benchmark: bool):

@@ -43,12 +43,13 @@ export default function App() {
         (data) => {
           setReview(data);
           setStatus(data.status);
+          setAttempts((prev) => prev + 1);
         },
         // onComplete — called when status is completed or failed
         (data) => {
           setReview(data);
           setStatus(data.status);
-          setAttempts(prev => prev + 1);
+          setLoading(false);
         },
         // onError — called on network error or timeout
         (err) => {
