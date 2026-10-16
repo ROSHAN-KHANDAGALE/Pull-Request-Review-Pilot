@@ -31,6 +31,7 @@ export const pollReview = (reviewId, onUpdate, onComplete, onError) => {
       if (data.status === "completed" || data.status === "failed") {
         clearInterval(interval);
         onComplete(data);
+        return;
       }
 
       if (attempts >= MAX_ATTEMPTS) {
