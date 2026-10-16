@@ -11,7 +11,7 @@ AI-native code review API built with FastAPI, PostgreSQL, Groq, and Celery. Acce
 | Framework | FastAPI (async) |
 | Database | PostgreSQL + SQLAlchemy (async) + asyncpg |
 | Task Queue | Celery + Redis |
-| LLM | Groq — `llama-3.3-70b-versatile` |
+| LLM | Groq Chat Completions (model configured with `MODEL_NAME`) |
 | GitHub Integration | GitHub REST API v3 (httpx) |
 | Authentication | JWT via python-jose + passlib bcrypt |
 | Rate Limiting | slowapi (10 requests/hour per IP) |
@@ -92,11 +92,16 @@ DATABASE_URL=postgresql+asyncpg://yourusername:yourpassword@localhost:5432/revie
 GROQ_API_KEY=your_groq_api_key
 GITHUB_TOKEN=github_pat_your_token
 ALLOWED_ORIGINS=["http://localhost:3000"]
-MODEL_NAME=your_model_name
+MODEL_NAME=your_groq_chat_model_id
 SECRET_KEY=your-super-secret-key-change-this
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REDIS_URL=redis://localhost:6379/0
 ```
+
+`MODEL_NAME` must identify a Groq model that supports Chat Completions and JSON
+output. `meta-llama/llama-prompt-guard-2-22m` is a moderation/classification
+model, not a review-generation model, so it cannot replace `MODEL_NAME` in this
+pipeline. Select a currently available Groq chat model for `MODEL_NAME`.
 
 ### 4. Start Redis
 

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.review import Review, Issue, BenchmarkRun
 from app.services.github import GitHubService
@@ -56,7 +57,7 @@ class ReviewService:
         await self.github.close()
 
 
-    async def run_analysis_only(self, review_id: str, pr_url: str, include_benchmark: bool):
+    async def run_analysis_only(self, review_id: UUID, pr_url: str, include_benchmark: bool):
 
         # Fetch existing review record
         result = await self.db.execute(select(Review).where(Review.id == review_id))

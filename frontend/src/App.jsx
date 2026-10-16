@@ -100,8 +100,8 @@ export default function App() {
         {/* Failed state */}
         {!loading && status === "failed" && (
           <div className="error-banner">
-            Review failed. The diff may be too large or the GitHub URL may be
-            invalid.
+            Review failed. Check the GitHub PR URL, backend worker logs, and
+            that MODEL_NAME is a supported chat-completions model.
           </div>
         )}
 

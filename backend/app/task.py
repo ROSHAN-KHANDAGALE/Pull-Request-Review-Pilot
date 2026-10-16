@@ -1,6 +1,7 @@
 import asyncio
+from uuid import UUID
 from app.worker import celery_app
-from app.db import AsyncSessionLocal
+from app.db import AsyncSessionLocal, engine
 from app.models.review import Review
 from sqlalchemy import select
 import logging
@@ -10,17 +11,23 @@ logger = logging.getLogger(__name__)
 @celery_app.task(name="run_review_task")
 def run_review_task(review_id, pr_url, include_benchmark):
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
+        asyncio.set_event_loop(loop)
         loop.run_until_complete(_async_run_review(review_id, pr_url, include_benchmark))
     finally:
-        loop.close()
+        try:
+            loop.run_until_complete(engine.dispose())
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
 
 
 async def _async_run_review(review_id: str, pr_url: str, include_benchmark: bool):
     async with AsyncSessionLocal() as db:
+        service = None
         try:
-            result = await db.execute(select(Review).where(Review.id == review_id))
+            review_uuid = UUID(review_id)
+            result = await db.execute(select(Review).where(Review.id == review_uuid))
             review = result.scalar_one_or_none()
 
             if not review:
@@ -32,21 +39,20 @@ async def _async_run_review(review_id: str, pr_url: str, include_benchmark: bool
 
             from app.services.review import ReviewService
             service = ReviewService(db)
-            await service.run_analysis_only(review_id, pr_url, include_benchmark)
+            await service.run_analysis_only(review_uuid, pr_url, include_benchmark)
 
-        except Exception as e:
-            logger.error(f"Task failed for review {review_id}: {type(e).__name__}: {e}")
+        except Exception:
+            logger.exception("Task failed for review %s", review_id)
             
             try:
-                result = await db.execute(select(Review).where(Review.id == review_id))
+                await db.rollback()
+                result = await db.execute(select(Review).where(Review.id == UUID(review_id)))
                 review = result.scalar_one_or_none()
                 if review:
                     review.status = "failed"
                     await db.commit()
-            except Exception as inner_e:
-                logger.error(f"Could not mark review as failed: {inner_e}")
+            except Exception:
+                logger.exception("Could not mark review %s as failed", review_id)
         finally:
-            await db.close()
-
-# Register as Celery task
-run_review_task = celery_app.task(name="run_review_task")(run_review_task)
+            if service is not None:
+                await service.shutdown()

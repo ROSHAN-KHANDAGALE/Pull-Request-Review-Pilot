@@ -5,10 +5,15 @@ from app.config import settings
 
 class LLMService:
     def __init__(self):
-        self.client = AsyncGroq(api_key=settings.groq_api_key)
         self.model = settings.model_name
+        self.client = AsyncGroq(api_key=settings.groq_api_key)
 
     async def analyze_diff(self, diff: str) -> dict:
+        if "prompt-guard" in self.model.lower():
+            raise ValueError(
+                "MODEL_NAME must be a Groq Chat Completions model. "
+                "Prompt Guard models are for moderation and cannot generate review results."
+            )
         # Rough token estimate — 1 token ≈ 4 characters
         estimated_tokens = len(diff) // 4
 
