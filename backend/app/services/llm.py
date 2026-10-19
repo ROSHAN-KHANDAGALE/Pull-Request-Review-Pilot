@@ -10,11 +10,13 @@ class LLMService:
 
     async def analyze_diff(self, diff: str) -> dict:
         if "prompt-guard" in self.model.lower():
-            raise ValueError(
-                "MODEL_NAME must be a Groq Chat Completions model. "
-                "Prompt Guard models are for moderation and cannot generate review results."
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "MODEL_NAME is configured with a Prompt Guard moderation model. "
+                    "Set it to a Groq chat-completions model to generate code reviews."
+                ),
             )
-        # Rough token estimate — 1 token ≈ 4 characters
         estimated_tokens = len(diff) // 4
 
         if estimated_tokens > 6000:
