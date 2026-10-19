@@ -10,11 +10,11 @@ AI-native code review API built with FastAPI, PostgreSQL, Groq, and Celery. Acce
 |---|---|
 | Framework | FastAPI (async) |
 | Database | PostgreSQL + SQLAlchemy (async) + asyncpg |
-| Task Queue | Celery + Redis |
+| Task Queue | Optional Celery + Redis |
 | LLM | Groq Chat Completions (model configured with `MODEL_NAME`) |
 | GitHub Integration | GitHub REST API v3 (httpx) |
 | Authentication | JWT via python-jose + passlib bcrypt |
-| Rate Limiting | slowapi (10 requests/hour per IP) |
+| Rate Limiting | slowapi (configurable; 10 review submissions/hour by default) |
 | Config | pydantic-settings |
 | Server | Uvicorn |
 
@@ -29,7 +29,7 @@ backend/
 │   ├── config.py            # Environment settings via pydantic-settings
 │   ├── db.py                # Async engine, session, Base
 │   ├── worker.py            # Celery app definition
-│   ├── tasks.py             # Background review task (asyncio.run wrapper)
+│   ├── task.py              # Background review task (asyncio event-loop wrapper)
 │   ├── middleware/
 │   │   └── rate_limit.py    # slowapi Limiter instance
 │   ├── models/
@@ -85,7 +85,8 @@ pip install -r requirements.txt
 
 ### 3. Configure environment variables
 
-Create a `.env` file in the `backend/` directory:
+Create a `.env` file in the `backend/` directory. The settings below select
+direct processing and disable rate limiting for local development:
 
 ```env
 DATABASE_URL=postgresql+asyncpg://yourusername:yourpassword@localhost:5432/reviewpilot
@@ -100,17 +101,19 @@ USE_CELERY=false
 ENABLE_RATE_LIMITING=false
 ```
 
-Set `USE_CELERY=true` and provide `REDIS_URL` to process reviews with the
-Celery/Redis worker. When `USE_CELERY=false`, reviews are processed directly
-by the API and Redis is not required. `ENABLE_RATE_LIMITING` independently
-controls the review submission rate limit (10 requests per hour); it defaults
-to `true`. These flags are read when the backend starts.
+Set `USE_CELERY=true` and provide `REDIS_URL` to make queued reviews available.
+When `USE_CELERY=false`, reviews are processed directly by the API and Redis is
+not required. The UI's worker switch is available only when the backend enables
+Celery. `ENABLE_RATE_LIMITING` independently controls the review submission
+limit of 10 requests per hour and defaults to `true`. Disabling it is intended
+for local development, not an internet-facing deployment. These settings are
+read at startup; restart the API after changing them.
 
 `MODEL_NAME` (or the legacy `DEFAULT_MODEL`) must identify a Groq model that
 supports Chat Completions and JSON output. If both variables are set,
-`MODEL_NAME` takes precedence. `meta-llama/llama-prompt-guard-2-22m` is a moderation/classification
-model, not a review-generation model, so it cannot replace `MODEL_NAME` in this
-pipeline. Select a currently available Groq chat model for `MODEL_NAME`.
+`MODEL_NAME` takes precedence. Prompt Guard models, including
+`meta-llama/llama-prompt-guard-2-22m`, perform moderation/classification and
+cannot generate review findings. Select a currently available Groq chat model.
 
 ### 4. Start Redis (only when using Celery)
 
@@ -134,9 +137,10 @@ celery -A app.worker.celery_app worker --loglevel=info --pool=solo
 
 `--pool=solo` is required on Windows for asyncio compatibility.
 
-The UI exposes the queue/direct processing choice when `USE_CELERY=true`.
-When the queue is disabled, the UI processes reviews directly and displays the
-rate-limiting state as configured by the backend.
+When `USE_CELERY=true`, the UI offers a choice between direct and queued
+processing. With `USE_CELERY=false`, reviews use direct processing. The UI
+displays the rate-limiting state reported by the backend; that setting is
+configured server-side with `ENABLE_RATE_LIMITING`.
 
 On startup you should see:
 
@@ -172,6 +176,10 @@ Frontend polls GET /reviews/{id} → shows results
 In direct mode, the API runs the same review service synchronously and returns
 the completed result without using Celery or Redis.
 
+`GET /reviews/options` returns whether queue processing and rate limiting are
+enabled, allowing the frontend to reflect the backend configuration. The
+client cannot enable or disable rate limiting.
+
 ### Authentication Flow
 
 ```
@@ -198,6 +206,7 @@ GET  /auth/me       → decode JWT → return current user
 |---|---|---|---|
 | POST | `/reviews/` | None | Submit PR for review |
 | GET | `/reviews/{id}` | None | Poll status / fetch results |
+| GET | `/reviews/options` | None | Read queue availability and rate-limit state |
 
 ---
 
@@ -239,3 +248,14 @@ Each category pools independently — one bad category cannot collapse the full 
 ## Interactive Docs
 
 Visit `http://localhost:8000/docs` after starting the server.
+
+## Troubleshooting
+
+- **Queued submission returns 503:** confirm Redis is reachable at `REDIS_URL`
+  and that a Celery worker is running. Direct processing does not use either.
+- **Review reports an unsupported Prompt Guard model:** set `MODEL_NAME` to a
+  Groq chat-completions model that supports JSON output, then restart the API
+  and worker.
+- **Rate limit returns 429:** review submissions are limited to 10 per hour
+  by default. For local testing, set `ENABLE_RATE_LIMITING=false` and restart
+  the API.

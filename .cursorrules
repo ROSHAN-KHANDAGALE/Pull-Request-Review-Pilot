@@ -1,5 +1,5 @@
 # ReviewPilot — Cursor Rules
-# Stack: FastAPI (async) + PostgreSQL + SQLAlchemy (async) + React 18 (CRA) + Groq + Celery + Redis
+# Stack: FastAPI (async) + PostgreSQL + SQLAlchemy (async) + React 19 (CRA) + Groq + optional Celery/Redis
 
 ---
 
@@ -7,8 +7,8 @@
 
 ReviewPilot is an AI-native code review agent. It accepts GitHub PR URLs, fetches
 diffs, runs structured LLM analysis via Groq, scores results on a 0–10,000
-category-weighted rubric, and displays findings in a React 18 frontend.
-Reviews are processed asynchronously via Celery + Redis.
+category-weighted rubric, and displays findings in a React 19 frontend.
+Reviews can run directly through the API or use Celery and Redis.
 
 ---
 
@@ -20,7 +20,8 @@ Reviews are processed asynchronously via Celery + Redis.
 - Prefer early returns over deeply nested conditionals
 - Keep functions small and single-purpose
 - Never hardcode secrets, API keys, or credentials — always use environment variables
-- Write self-documenting code; add docstrings only for non-obvious logic
+- Write self-documenting code; use docstrings for public or non-obvious behavior
+- Avoid redundant inline comments; keep comments only when they explain non-obvious intent
 
 ---
 
@@ -73,15 +74,20 @@ Reviews are processed asynchronously via Celery + Redis.
 - slowapi `Limiter` with `get_remote_address` as key function
 - Limiter instance in `app/middleware/rate_limit.py`
 - Register on `app.state.limiter` and add `RateLimitExceeded` handler in `main.py`
-- Apply `@limiter.limit("10/hour")` only on expensive endpoints (POST /reviews/)
+- Use the `rate_limit("10/hour")` helper for expensive endpoints (POST /reviews/);
+  it respects `settings.enable_rate_limiting`
 - `Request` must be the first parameter on rate-limited route handlers
 
 ### Celery + Redis
-- Celery app defined in `app/worker.py` with `include=["app.tasks"]`
-- Tasks defined in `app/tasks.py` with `@celery_app.task(name="task_name")` decorator
-- Tasks are regular `def` functions — wrap async logic with `asyncio.run()`
+- Celery app defined in `app/worker.py` with `include=["app.task"]`
+- Tasks defined in `app/task.py` with `@celery_app.task(name="task_name")` decorator
+- Tasks are regular `def` functions — run async logic on an event loop created
+  for the task
 - Never use `async def` directly as a Celery task
 - Celery worker must be started with `--pool=solo` on Windows
+- `USE_CELERY=false` allows direct API processing without Redis
+- Require `REDIS_URL` only when `USE_CELERY=true`
+- `ENABLE_RATE_LIMITING` controls API-side limits; never add a client-side bypass
 - Always create a fresh `AsyncSessionLocal()` session inside tasks — never reuse FastAPI sessions
 - Always close the session in a `finally` block inside tasks
 - Import services inside the async function (not at module level) to avoid circular imports
@@ -94,6 +100,7 @@ Reviews are processed asynchronously via Celery + Redis.
 - 404 — resource not found
 - 429 — rate limit exceeded (handled by slowapi automatically)
 - 502 — external API failure (GitHub, Groq)
+- 503 — queue publishing failed, queue mode is disabled, or review model is unsupported
 - Separate network errors (`httpx.RequestError`) from HTTP errors (non-200 status)
 - Always log exceptions in Celery tasks — never swallow silently
 
@@ -102,8 +109,12 @@ Reviews are processed asynchronously via Celery + Redis.
 - Settings class lives in `app/config.py`, exported as `settings` singleton
 - `.env` file in `backend/` — never committed to git
 - Required env vars: `DATABASE_URL`, `GROQ_API_KEY`, `GITHUB_TOKEN`,
-  `ALLOWED_ORIGINS`, `MODEL_NAME`, `SECRET_KEY`,
-  `ACCESS_TOKEN_EXPIRE_MINUTES`, `REDIS_URL`
+  `ALLOWED_ORIGINS`, `MODEL_NAME` (or legacy `DEFAULT_MODEL`), `SECRET_KEY`,
+  `ACCESS_TOKEN_EXPIRE_MINUTES`
+- Optional env vars: `USE_CELERY` (defaults to `true`), `REDIS_URL` (required
+  only when Celery is enabled), and `ENABLE_RATE_LIMITING` (defaults to `true`)
+- `MODEL_NAME` must be a Groq chat-completions model; Prompt Guard cannot
+  generate code-review findings
 
 ### File Structure
 ```
@@ -112,7 +123,7 @@ app/
 ├── config.py         # Settings
 ├── db.py             # Engine, session, Base
 ├── worker.py         # Celery app
-├── tasks.py          # Background tasks
+├── task.py           # Background task and async review execution
 ├── middleware/       # Rate limiting
 ├── models/           # ORM models only
 ├── schemas/          # Pydantic schemas only
@@ -122,7 +133,7 @@ app/
 
 ---
 
-## Frontend — React 18 (Create React App)
+## Frontend — React 19 (Create React App)
 
 ### Environment
 - This project uses Create React App (CRA)
@@ -152,6 +163,10 @@ app/
 
 ### API Calls
 - All API calls live in `src/services/api.js`
+- Read processing capabilities from `GET /reviews/options`
+- Send `execution_mode` as `direct` or `queued` when creating a review
+- Rate limiting is server-controlled; the UI may display its state but cannot
+  disable or bypass it
 - Use axios with a base instance configured from `process.env.REACT_APP_API_URL`
 - Never call `fetch` or `axios` directly inside components
 - Handle errors at the component level, not inside the service
@@ -214,19 +229,20 @@ app/
 
 ---
 
-## Running the Full Stack
+## Running Locally
+
+For direct processing, start PostgreSQL, FastAPI, and the frontend; Redis and a
+worker are not needed. For queued reviews, set `USE_CELERY=true`, start Redis,
+and run the Celery worker in a separate terminal.
 
 ```bash
-# Terminal 1 — Redis
-docker start reviewpilot-redis
-
-# Terminal 2 — FastAPI
+# From backend
 uvicorn app.main:app --reload
 
-# Terminal 3 — Celery worker
+# From backend, only when USE_CELERY=true and Redis is already running
 celery -A app.worker.celery_app worker --loglevel=info --pool=solo
 
-# Terminal 4 — React frontend
+# From frontend
 npm start
 ```
 
