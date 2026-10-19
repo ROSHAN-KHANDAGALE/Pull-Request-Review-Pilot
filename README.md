@@ -14,7 +14,7 @@ ReviewPilot takes a GitHub Pull Request URL and:
 3. Extracts issues tagged by severity (`critical`, `major`, `minor`, `info`) and category (`correctness`, `security`, `maintainability`, `test_coverage`, `documentation`)
 4. Calculates a **category-weighted score from 0 to 10,000**
 5. Optionally benchmarks against a simulated vanilla Claude baseline
-6. Processes reviews asynchronously via Celery + Redis — no hanging requests
+6. Processes reviews directly through the API or asynchronously with Celery and Redis
 
 ---
 
@@ -31,8 +31,8 @@ Vanilla LLMs can review code — but they return freeform prose with no structur
 | GitHub integration | None | Fetches diff directly from PR URL |
 | Consistency | Varies per prompt | Same rubric every run |
 | Authentication | None | JWT-based user auth |
-| Rate limiting | None | 10 requests/hour per IP |
-| Async processing | None | Celery + Redis background queue |
+| Rate limiting | None | Configurable; 10 requests/hour per IP by default |
+| Background processing | None | Optional Celery + Redis queue |
 
 ---
 
@@ -65,12 +65,12 @@ Each category is independently capped — one bad category cannot collapse the f
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18 + Axios |
+| Frontend | React 19 + Axios |
 | Styling | Custom CSS — dark theme, Syne + DM Mono fonts |
 | Backend | FastAPI (async Python) |
 | Database | PostgreSQL + SQLAlchemy (async) + asyncpg |
-| Task Queue | Celery + Redis |
-| LLM | Groq  |
+| Task Queue | Optional Celery + Redis |
+| LLM | Groq Chat Completions |
 | GitHub | GitHub REST API v3 (httpx) |
 | Auth | JWT via python-jose + passlib |
 | Config | pydantic-settings |
@@ -87,7 +87,7 @@ reviewpilot/
 │   │   ├── config.py                # Env settings
 │   │   ├── db.py                    # Async DB engine + session
 │   │   ├── worker.py                # Celery app definition
-│   │   ├── tasks.py                 # Background review task
+│   │   ├── task.py                  # Background review task
 │   │   ├── middleware/
 │   │   │   └── rate_limit.py        # slowapi limiter
 │   │   ├── models/
@@ -134,7 +134,7 @@ reviewpilot/
 - Python 3.11+
 - Node.js 18+
 - PostgreSQL (local or remote)
-- Docker (for Redis)
+- Redis only when using queued reviews (Docker is one way to run Redis)
 - Groq API key → https://console.groq.com
 - GitHub Fine-grained Personal Access Token
 
@@ -161,13 +161,30 @@ DATABASE_URL=postgresql+asyncpg://yourusername:yourpassword@localhost:5432/revie
 GROQ_API_KEY=your_groq_api_key
 GITHUB_TOKEN=github_pat_your_token
 ALLOWED_ORIGINS=["http://localhost:3000"]
-MODEL_NAME=your_model_name
+MODEL_NAME=your_groq_chat_model_id
 SECRET_KEY=your-super-secret-key-change-this
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REDIS_URL=redis://localhost:6379/0
+USE_CELERY=false
+ENABLE_RATE_LIMITING=false
 ```
 
-Start Redis via Docker:
+For local testing without Redis, leave `USE_CELERY=false`; reviews run directly
+through the API. `ENABLE_RATE_LIMITING` independently controls the API's
+10-submissions-per-hour limit and defaults to `true`. Disabling it is intended
+for local development. These settings are loaded at startup, so restart the
+backend after changing them.
+
+To use the queue, set `USE_CELERY=true`, configure `REDIS_URL`, and run Redis
+plus a Celery worker. The UI will offer a direct-versus-queued processing
+choice when queueing is enabled. On Windows, start the worker with `--pool=solo`.
+
+`MODEL_NAME` must be a Groq chat-completions model that supports JSON output.
+Prompt Guard models, including `meta-llama/llama-prompt-guard-2-22m`, are for
+moderation and cannot generate code-review results. `DEFAULT_MODEL` is accepted
+as a legacy alternative; `MODEL_NAME` takes precedence.
+
+Start Redis only when using Celery. For example:
 
 ```bash
 docker run -d --name reviewpilot-redis -p 6379:6379 redis:alpine
@@ -179,7 +196,7 @@ Start the FastAPI server:
 uvicorn app.main:app --reload
 ```
 
-Start the Celery worker (new terminal):
+Start a Celery worker in another terminal when queueing is enabled:
 
 ```bash
 celery -A app.worker.celery_app worker --loglevel=info --pool=solo
@@ -194,7 +211,6 @@ On first run, the lifespan handler automatically creates the database and all ta
 ```bash
 cd frontend
 npm install
-npm start
 ```
 
 Create `frontend/.env`:
@@ -203,23 +219,25 @@ Create `frontend/.env`:
 REACT_APP_API_URL=http://localhost:8000
 ```
 
-App runs at `http://localhost:3000`.
+Start the frontend with `npm start`; it runs at `http://localhost:3000`.
 
 ---
 
 ### Running All Services
 
-You need three terminals:
+For direct local processing, start PostgreSQL, the backend, and the frontend;
+Redis and Celery are not required. For queued processing, start Redis and the
+worker too.
 
 ```bash
-# Terminal 1 — FastAPI
+# From the backend directory
 uvicorn app.main:app --reload
 
-# Terminal 2 — Celery worker
+# In another backend terminal, only when USE_CELERY=true
 celery -A app.worker.celery_app worker --loglevel=info --pool=solo
 
-# Terminal 3 — Redis (if not already running)
-docker start reviewpilot-redis
+# From the frontend directory
+npm start
 ```
 
 ---
@@ -250,17 +268,31 @@ docker start reviewpilot-redis
 
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/reviews/` | Submit a PR for review (rate limited: 10/hour) |
+| POST | `/reviews/` | Submit a PR for direct or queued review |
 | GET | `/reviews/{id}` | Poll review status and fetch results |
+| GET | `/reviews/options` | Read queue availability and rate-limit state |
 
-### Async Review Flow
+Rate limiting is configured on the backend, not in the browser. The UI displays
+its state but cannot disable it. Queue selection is available only when
+`USE_CELERY=true`.
+
+### Review Flow
 
 ```
-POST /reviews/     → returns { id, status: "pending" } instantly
-GET  /reviews/{id} → poll every 3s until status = "completed"
+Direct: POST /reviews/ → returns the completed review
+Queued: POST /reviews/ → returns { id, status: "pending" }
+        GET /reviews/{id} → poll until status = "completed" or "failed"
 ```
 
 Full Swagger docs at `http://localhost:8000/docs`.
+
+### Common setup issues
+
+- If a queued review cannot be submitted, check that Redis is reachable at
+  `REDIS_URL` and that a Celery worker is running. Direct mode does not need
+  either service.
+- If the API reports that Prompt Guard cannot generate reviews, set
+  `MODEL_NAME` to a supported Groq chat-completions model and restart the API.
 
 ---
 
@@ -281,8 +313,8 @@ Scoring methodology and benchmark results are documented in [`BENCHMARK.md`](./B
 - [x] Agent code (FastAPI + Groq + GitHub API)
 - [x] Cursor-configured (`.cursorrules`)
 - [x] JWT Authentication
-- [x] Rate limiting (10/hour per IP)
-- [x] Async background processing (Celery + Redis)
+- [x] Configurable rate limiting (10/hour per IP by default)
+- [x] Direct local and queued background review processing
 - [x] Performance metrics and calculation method
 - [x] Comparison with default Cursor/Claude baseline
 - [x] Problem specialization explanation
