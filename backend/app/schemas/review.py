@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 from uuid import UUID
 
@@ -6,6 +7,7 @@ from uuid import UUID
 class ReviewCreate(BaseModel):
     pr_url: str 
     include_benchmark: bool = False
+    execution_mode: Literal["direct", "queued"] = "queued"
     
     @field_validator("pr_url")
     @classmethod

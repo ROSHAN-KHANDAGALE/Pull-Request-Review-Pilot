@@ -26,7 +26,6 @@ class AuthService:
         if expires_delta:
             expire = datetime.now(timezone.utc) + expires_delta
         else:
-            # Fallback to settings or default 15 mins
             expire = datetime.now(timezone.utc) + timedelta(minutes=15)
         
         to_encode.update({"exp": expire})
