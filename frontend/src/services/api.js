@@ -4,11 +4,21 @@ const api = axios.create({
   baseURL: process.env.REACT_APP_API_URL,
 });
 
-export const submitReview = async (prUrl, includeBenchmark = false) => {
+export const submitReview = async (
+  prUrl,
+  includeBenchmark = false,
+  executionMode = "queued",
+) => {
   const { data } = await api.post("/reviews/", {
     pr_url: prUrl,
     include_benchmark: includeBenchmark,
+    execution_mode: executionMode,
   });
+  return data;
+};
+
+export const getReviewOptions = async () => {
+  const { data } = await api.get("/reviews/options");
   return data;
 };
 
@@ -18,8 +28,8 @@ export const getReview = async (reviewId) => {
 };
 
 export const pollReview = (reviewId, onUpdate, onComplete, onError) => {
-  const INTERVAL = 3000; // poll every 3 seconds
-  const MAX_ATTEMPTS = 60; // give up after 3 minutes (60 × 3s)
+  const INTERVAL = 3000;
+  const MAX_ATTEMPTS = 60;
   let attempts = 0;
 
   const interval = setInterval(async () => {
@@ -44,6 +54,5 @@ export const pollReview = (reviewId, onUpdate, onComplete, onError) => {
     }
   }, INTERVAL);
 
-  // Return cleanup function
   return () => clearInterval(interval);
 };

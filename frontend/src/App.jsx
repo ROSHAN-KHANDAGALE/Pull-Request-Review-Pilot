@@ -3,7 +3,7 @@ import ReviewForm from "./components/ReviewForm";
 import ScoreGauge from "./components/ScoreGauge";
 import IssueList from "./components/IssueList";
 import BenchmarkPanel from "./components/BenchmarkPanel";
-import { submitReview, pollReview } from "./services/api";
+import { getReviewOptions, submitReview, pollReview } from "./services/api";
 import "./App.css";
 
 export default function App() {
@@ -12,46 +12,65 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [attempts, setAttempts] = useState(0);
+  const [options, setOptions] = useState(null);
+  const [optionsError, setOptionsError] = useState("");
+  const [useQueue, setUseQueue] = useState(false);
   const cleanupRef = useRef(null);
 
-  // Cleanup polling on unmount
   useEffect(() => {
+    let active = true;
+    getReviewOptions()
+      .then((data) => {
+        if (!active) return;
+        setOptions(data);
+        setUseQueue(data.queue_enabled);
+      })
+      .catch((err) => {
+        if (active) {
+          setOptionsError(
+            err.response?.data?.detail || "Could not load review settings.",
+          );
+        }
+      });
+
     return () => {
+      active = false;
       if (cleanupRef.current) cleanupRef.current();
     };
   }, []);
 
-  const handleSubmit = async (prUrl, includeBenchmark) => {
-    // Cancel any existing poll
+  const handleSubmit = async (prUrl, includeBenchmark, shouldUseQueue) => {
     if (cleanupRef.current) cleanupRef.current();
 
     setLoading(true);
     setError("");
     setReview(null);
-    setStatus("pending");
+    setAttempts(0);
+    setStatus(shouldUseQueue ? "pending" : "processing");
 
     try {
-      // Step 1 — submit, get review id back instantly
-      const initial = await submitReview(prUrl, includeBenchmark);
+      const executionMode = shouldUseQueue ? "queued" : "direct";
+      const initial = await submitReview(prUrl, includeBenchmark, executionMode);
       setReview(initial);
       setStatus(initial.status);
 
-      // Step 2 — start polling
+      if (!shouldUseQueue) {
+        setLoading(false);
+        return;
+      }
+
       cleanupRef.current = pollReview(
         initial.id,
-        // onUpdate — called every poll tick
         (data) => {
           setReview(data);
           setStatus(data.status);
           setAttempts((prev) => prev + 1);
         },
-        // onComplete — called when status is completed or failed
         (data) => {
           setReview(data);
           setStatus(data.status);
           setLoading(false);
         },
-        // onError — called on network error or timeout
         (err) => {
           setError(err.message || "Something went wrong.");
           setLoading(false);
@@ -64,13 +83,16 @@ export default function App() {
   };
 
   const getStatusMessage = () => {
-  switch (status) {
-    case 'pending':    return `Queued — waiting for worker... (${attempts}s)`;
-    case 'processing': return `Running analysis... (${attempts * 3}s elapsed)`;
-    default:           return null;
-  }
-};
-
+    if (status === "pending") {
+      return `Queued — waiting for worker... (${attempts * 3}s elapsed)`;
+    }
+    if (status === "processing") {
+      return useQueue
+        ? `Running analysis... (${attempts * 3}s elapsed)`
+        : "Running analysis directly...";
+    }
+    return null;
+  };
 
   return (
     <div className="app">
@@ -85,11 +107,18 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        <ReviewForm onSubmit={handleSubmit} loading={loading} />
+        <ReviewForm
+          onSubmit={handleSubmit}
+          loading={loading || options === null || Boolean(optionsError)}
+          queueEnabled={Boolean(options?.queue_enabled)}
+          useQueue={useQueue}
+          onQueueChange={setUseQueue}
+          rateLimitingEnabled={Boolean(options?.rate_limiting_enabled)}
+        />
 
+        {optionsError && <div className="error-banner">{optionsError}</div>}
         {error && <div className="error-banner">{error}</div>}
 
-        {/* Status indicator while loading */}
         {loading && (
           <div className="loading-state">
             <div className="loading-ring" />
@@ -97,7 +126,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Failed state */}
         {!loading && status === "failed" && (
           <div className="error-banner">
             Review failed. Check the GitHub PR URL, backend worker logs, and
@@ -105,7 +133,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Results */}
         {!loading && review && status === "completed" && (
           <div className="results-grid">
             <div className="results-top">
@@ -127,4 +154,4 @@ export default function App() {
       </main>
     </div>
   );
-};
+}

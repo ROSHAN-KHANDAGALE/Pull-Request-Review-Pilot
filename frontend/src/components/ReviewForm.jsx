@@ -1,6 +1,13 @@
 import { useState } from "react";
 
-export default function ReviewForm({ onSubmit, loading }) {
+export default function ReviewForm({
+  onSubmit,
+  loading,
+  queueEnabled,
+  useQueue,
+  onQueueChange,
+  rateLimitingEnabled,
+}) {
   const [prUrl, setPrUrl] = useState("");
   const [includeBenchmark, setIncludeBenchmark] = useState(false);
   const [error, setError] = useState("");
@@ -11,7 +18,7 @@ export default function ReviewForm({ onSubmit, loading }) {
       return;
     }
     setError("");
-    onSubmit(prUrl, includeBenchmark);
+    onSubmit(prUrl, includeBenchmark, useQueue);
   };
 
   return (
@@ -47,6 +54,19 @@ export default function ReviewForm({ onSubmit, loading }) {
         />
         <span>Include benchmark comparison</span>
       </label>
+      <label className="feature-toggle">
+        <input
+          type="checkbox"
+          checked={useQueue}
+          onChange={(e) => onQueueChange(e.target.checked)}
+          disabled={loading || !queueEnabled}
+        />
+        <span>Use background worker (Celery/Redis)</span>
+        {!queueEnabled && <span className="feature-note">Disabled by server</span>}
+      </label>
+      <p className="feature-status">
+        API rate limiting: {rateLimitingEnabled ? "on" : "off"} (server controlled)
+      </p>
     </div>
   );
 }
