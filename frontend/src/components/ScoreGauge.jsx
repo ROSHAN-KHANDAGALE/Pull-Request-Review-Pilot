@@ -14,7 +14,6 @@ export default function ScoreGauge({ score }) {
     return "Needs Work";
   };
 
-  // SVG arc math
   const r = 54;
   const cx = 70;
   const cy = 70;
@@ -37,7 +36,6 @@ export default function ScoreGauge({ score }) {
   return (
     <div className="score-gauge">
       <svg viewBox="0 0 140 100" width="180">
-        {/* Track */}
         <path
           d={describeArc(startAngle, endAngle)}
           fill="none"
@@ -45,7 +43,6 @@ export default function ScoreGauge({ score }) {
           strokeWidth="8"
           strokeLinecap="round"
         />
-        {/* Fill */}
         <path
           d={describeArc(startAngle, startAngle + filledDeg)}
           fill="none"

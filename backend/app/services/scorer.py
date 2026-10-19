@@ -1,5 +1,5 @@
 class ScorerService:
-
+    """Calculates category-weighted review scores and a flat baseline score."""
     CATEGORY_MAX = {
         "correctness": 4000,
         "security": 2000,
@@ -15,8 +15,6 @@ class ScorerService:
         "info": 0.0,
     }
 
-    # Baseline simulates vanilla Claude: no category awareness,
-    # flat deductions, no severity granularity beyond critical/other
     BASELINE_SEVERITY_DEDUCTION = {
         "critical": 1500,
         "major": 500,
@@ -31,7 +29,6 @@ class ScorerService:
         Issues deduct from their category pool — a single category
         cannot tank the entire score.
         """
-        # Track remaining points per category
         category_remaining = dict(ScorerService.CATEGORY_MAX)
 
         for issue in issues:
@@ -42,7 +39,6 @@ class ScorerService:
             max_points = ScorerService.CATEGORY_MAX.get(category, 0)
             deduction = max_points * multiplier
 
-            # Deduct from category pool, floor at 0
             category_remaining[category] = max(
                 0, category_remaining.get(category, 0) - deduction
             )
