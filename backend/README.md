@@ -1,6 +1,6 @@
 # ReviewPilot — Backend
 
-AI-native code review API built with FastAPI, PostgreSQL, Groq, and Celery. Accepts a GitHub PR URL, fetches the diff, runs a structured async LLM review, and returns a scored report with categorized issues.
+AI-assisted code review API built with FastAPI, PostgreSQL, and Groq. It accepts a GitHub PR URL, fetches the diff, runs a structured LLM review, and returns a scored report with categorized findings. Reviews run directly through the API by default in the documented local setup; Celery and Redis are optional.
 
 ---
 

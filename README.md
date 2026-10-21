@@ -1,16 +1,27 @@
 # ReviewPilot
 
-> AI-native code review agent — submit a GitHub PR URL, get a structured review with scored findings, severity-tagged issues, and a benchmark comparison against vanilla Claude.
+ReviewPilot reviews GitHub pull requests and presents structured, severity-tagged findings with a category-weighted score. It includes a React interface and can process reviews directly through the API or use an optional Celery and Redis queue.
 
+**GitHub About description:** AI-assisted GitHub pull request reviews with scored findings and optional background processing.
 
 ---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Scoring system](#scoring-system)
+- [Technology](#tech-stack)
+- [Getting started](#getting-started)
+- [API reference](#api-reference)
+- [Contributing and community standards](#contributing-and-community-standards)
+- [License](#license)
 
 ## What It Does
 
 ReviewPilot takes a GitHub Pull Request URL and:
 
 1. Fetches the raw diff via the GitHub API
-2. Runs a structured LLM review using Groq.
+2. Runs a structured LLM review using a Groq chat-completions model.
 3. Extracts issues tagged by severity (`critical`, `major`, `minor`, `info`) and category (`correctness`, `security`, `maintainability`, `test_coverage`, `documentation`)
 4. Calculates a **category-weighted score from 0 to 10,000**
 5. Optionally benchmarks against a simulated vanilla Claude baseline
@@ -20,19 +31,19 @@ ReviewPilot takes a GitHub Pull Request URL and:
 
 ## Why This Agent Exists
 
-Vanilla LLMs can review code — but they return freeform prose with no structure, no scoring, and no consistency. ReviewPilot solves that:
+ReviewPilot is designed to make review results easier to scan and compare:
 
 | | Vanilla Claude/Cursor | ReviewPilot Agent |
 |---|---|---|
 | Output format | Freeform text | Structured JSON → typed UI |
-| Severity tagging | None | Critical / Major / Minor / Info |
-| Scoring | None | 0–10,000 category-weighted |
-| Category awareness | None | 5 categories with weighted pools |
+| Severity tagging | Varies | Critical / Major / Minor / Info |
+| Scoring | Varies | 0–10,000 category-weighted |
+| Category awareness | Varies | 5 categories with weighted pools |
 | GitHub integration | None | Fetches diff directly from PR URL |
 | Consistency | Varies per prompt | Same rubric every run |
-| Authentication | None | JWT-based user auth |
-| Rate limiting | None | Configurable; 10 requests/hour per IP by default |
-| Background processing | None | Optional Celery + Redis queue |
+| Authentication | Varies | JWT-based user auth |
+| Rate limiting | Varies | Configurable; 10 requests/hour per IP by default |
+| Background processing | Varies | Optional Celery + Redis queue |
 
 ---
 
@@ -120,8 +131,14 @@ reviewpilot/
 │   │   └── App.css
 │   ├── .env
 │   └── package.json
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   └── PULL_REQUEST_TEMPLATE.md
 ├── .cursorrules
 ├── BENCHMARK.md
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 └── README.md
 ```
 
@@ -131,7 +148,7 @@ reviewpilot/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Node.js 18+
 - PostgreSQL (local or remote)
 - Redis only when using queued reviews (Docker is one way to run Redis)
@@ -308,17 +325,19 @@ Scoring methodology and benchmark results are documented in [`BENCHMARK.md`](./B
 
 ---
 
-## Quest Checklist
+## Contributing and Community Standards
 
-- [x] Agent code (FastAPI + Groq + GitHub API)
-- [x] Cursor-configured (`.cursorrules`)
-- [x] JWT Authentication
-- [x] Configurable rate limiting (10/hour per IP by default)
-- [x] Direct local and queued background review processing
-- [x] Performance metrics and calculation method
-- [x] Comparison with default Cursor/Claude baseline
-- [x] Problem specialization explanation
-- [x] Comprehensive documentation
-- [x] All sensitive information removed (`.env` gitignored)
+Contributions and clear bug reports are welcome. Please read the project
+guidelines before opening an issue or pull request:
 
----
+- [Contributing guide](./CONTRIBUTING.md)
+- [Code of conduct](./CODE_OF_CONDUCT.md)
+- [Security policy](./SECURITY.md)
+- [Bug report and feature request templates](./.github/ISSUE_TEMPLATE/)
+- [Pull request template](./.github/PULL_REQUEST_TEMPLATE.md)
+
+## License
+
+This repository does not currently include a license. No license to use,
+modify, or redistribute this code is granted. Please contact the repository
+owner if you need permission.
